@@ -1,0 +1,23 @@
+/* =========================================================
+   Section numbering styling for R Markdown (HTML output)
+   ========================================================= */
+
+/* Make section numbers bold */
+.header-section-number {
+  font-weight: bold;
+}
+
+/* Add a dot after section numbers */
+.header-section-number::after {
+  content: ". ";
+}
+
+/* Optional: improve spacing consistency */
+h1 .header-section-number,
+h2 .header-section-number,
+h3 .header-section-number,
+h4 .header-section-number,
+h5 .header-section-number,
+h6 .header-section-number {
+  margin-right: 2px;
+}

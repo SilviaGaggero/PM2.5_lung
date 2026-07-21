@@ -1,0 +1,638 @@
+---
+title: "Bulk RNAseq analysis"
+author: "Silvia Gaggero"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+subtitle: QC and data cleaning with EdgeR pipeline
+editor_options:
+  chunk_output_type: inline
+css: styles.css
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE,
+                      fig.align = "center",
+                      results = "asis", 
+                      dpi = 200)
+
+```
+
+<br>
+
+## **Initialization**
+
+Load R packages, custom functions, and data needed for the analysis.
+
+<br>
+
+```{r load_libraries}
+
+#use BiocManager::install("package_name") or install.package("package_name") to install packages
+
+# Load Libraries
+library(openxlsx) #work with xlsx files
+library(htmltools) # html tools for report visualization
+library(reactable) # nice table visualization
+library(stringr)
+library(ggplot2) # nice plot
+library(RColorBrewer) # nice color scale
+library(pheatmap) # nice heatmap
+library(scales) # nice scale for axis
+library(ComplexHeatmap) # nice upset plots
+library(tibble)
+
+# libraries from BiocManager
+library(edgeR) # DE analysis
+library(biomaRt) # search for gene names
+
+```
+
+```{r load_functions}
+
+wd = getwd()
+source(paste0(wd,"/R_custom_functions.R"))
+
+```
+
+``` {r plot theme}
+
+plot_theme = theme_classic()+
+  theme(axis.text.x = element_text(size=11),
+        axis.text.y = element_text(size=11),
+        axis.title = element_text(size = 12,face = "bold"),
+        legend.text = element_text(size = 11),
+        legend.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5,
+                                  margin = margin(b = 20)))
+
+```
+
+``` {r load_data}
+
+# SET FOLDERS
+path="D:/OneDrive/Lab_Lille/Various projects/Muriel Pichavant/PM2.5/Bulk_RNAseq_Smyth_T.R_2026/"
+source_data_folder= "Source data/"
+analyzed_data_folder= "Analyzed data/"
+fig_folder="Figures/"
+
+#MART HUMAN GENE NAMES
+mart_path = paste0(path,source_data_folder,"mart_export_human_v2025Dec.txt")
+
+# LOAD RAW COUNTS:
+raw_counts.df = read.xlsx(paste0(path,source_data_folder,"Raw_RNAseq_Count_Data.xlsx"),
+                          colNames =TRUE, 
+                          rowNames = TRUE)
+
+#clean from non relevant columns
+raw_counts.df = raw_counts.df[,-1]
+
+#remove outliers
+outliers = c("December.2.M0.Veh",
+             "December.2.M2.Veh",
+             "December.5.M0.PM",
+             "December.5.M2.PM",
+             "December.5.M0.M1.Veh",
+             "December.5.M2.M1.Veh",
+             "March.2.M0.PM")
+raw_counts.df = raw_counts.df[, !colnames(raw_counts.df) %in% outliers]
+
+# preview raw counts
+tagList(tags$h3("Raw counts"),
+        table_download(raw_counts.df,
+    base_filename = "gene_counts"),
+  reactable(raw_counts.df,
+    searchable = TRUE,
+    pagination = TRUE,
+    showPageSizeOptions = TRUE,
+    defaultPageSize = 5,
+    pageSizeOptions = c(5, 10, 50, 100, 500)))
+
+```
+
+<br><br>
+
+## **Pre-processing:**
+
+Preparation of the data for analysis with EdgeR-limma-voom pipeline. For more details 
+
+<br>
+
+``` {r pre-processing}
+
+samples = colnames(raw_counts.df)
+
+parts = strsplit(samples, "\\.")
+
+batch = sapply(parts, `[`, 1)
+
+replicate = sapply(parts, `[`, 2)
+
+phenotype = sapply(parts, function(x)
+    paste(x[3:(length(x)-1)], collapse = "."))
+
+treatment = sapply(parts, function(x) tail(x, 1))
+
+batch.rep = paste(batch, replicate, sep = ".")
+
+group = paste(phenotype, treatment, sep = ".")
+
+phenotype.ord = c("M0","M2","M0.M1","M2.M1")
+
+group.ord = c("M0.Veh","M0.PM",
+              "M2.Veh","M2.PM",
+              "M0.M1.Veh","M0.M1.PM",
+              "M2.M1.Veh","M2.M1.PM")
+# Create design table for merged data
+design.df = data.frame(sampleID = samples,
+                       Batch = factor(batch, levels = unique(batch)),
+                       Phenotype = factor(phenotype, levels= phenotype.ord),
+                       Treatment = factor(treatment,
+                                          levels = unique(treatment)),
+                       Replicate = factor(replicate,
+                                          levels = unique(replicate)),
+                       Batch.Rep = factor(batch.rep, levels = unique(batch.rep)),
+                       Group = factor(group,
+                                      levels = group.ord))
+
+# define colors of the clusters
+sample.annot.color = c("#DDB667","#FD9F38","#F09A93","#B2172B",
+                       "#A6CEE3","#599DC8","#A8D08D","#3A924A")
+names(sample.annot.color)=group.ord
+
+# Convert ensembl id to gene names
+rownames(raw_counts.df) = get_human_gene_names(rownames(raw_counts.df), 
+                                            mirror = "www",
+                                            path = mart_path)
+
+# Creating a DGEList object 
+dge = DGEList(counts=raw_counts.df)
+
+#remove genes with very low counts across all samples. This value can be changed based on results of the density plot in the QC but this is the common standard
+message("Genes before filtering: ", nrow(dge))
+keep = filterByExpr(dge, group = design.df$Group)
+
+dge = dge[keep, , keep.lib.sizes = FALSE]
+message("Genes after filtering : ", nrow(dge))
+
+# Normalize count for DE analysis (trimmed mean of M-values)
+dge = calcNormFactors(dge, method = "TMM")
+
+#save dds object
+saveRDS(dge, file = paste0(path,analyzed_data_folder,"dge_edgeR.rds"))
+
+# Normalize data for sample distances and PCA plots
+# log2CPM
+logCPM = cpm(dge, log = TRUE)
+
+```
+
+<br>
+
+## **Quality Control:** {.tabset .tabset-fade .tabset-pills}
+
+<br>
+
+Control of data quality is performed by checking that library sizes are similar, especially after normalization, and that most of the genes with low counts across all samples have been properly removed. 
+Sample distances and Principal Component Analysis (PCA)) on vst-normalized data can be used to visualize similarity between samples and verify the presence of batch effect that might hinder biological differences in the analysis. 
+
+<br>
+
+### Histogram plot of library sizes before normalization
+
+``` {r QC_Histogram, fig.width=30, fig.height=6}
+
+# Check for read count across sample
+total.count = data.frame(Count  = colSums(dge$counts),
+                         Sample = colnames(dge$counts),
+                         Group  = group)
+
+# reorder Sample column following order established in boxplot section
+total.count$Sample = factor(total.count$Sample, 
+                            levels = colnames(dge$counts))
+
+# boxplot
+ggplot(total.count, aes(x = Sample, y = Count, fill = Group))+
+  geom_bar(stat = "identity") +
+  ylab(label = "Total read count") +
+  scale_y_continuous(labels = comma,expand = c(0,0)) +
+  plot_theme +
+  theme(axis.text.x = element_text(angle=50, hjust=1))+
+  ggtitle("Library size")+
+  scale_fill_manual(values=sample.annot.color)
+  
+```
+
+### Boxplot of raw and normalized counts
+
+``` {r QC_Boxplot, fig.width=10, fig.height=30}
+
+# Prepare raw counts
+pseudo.raw = log2(dge$counts + 1)
+df.raw = reshape2::melt(pseudo.raw)
+df.raw$Group = rep(group, each = nrow(dge))
+df.raw$Var2 = factor(df.raw$Var2, levels = colnames(dge$counts))
+df.raw$Type = "Raw counts"
+
+# Prepare normalized counts
+pseudo.norm = log2(cpm(dge) + 1)
+df.norm = reshape2::melt(pseudo.norm)
+df.norm$Group = rep(group, each = nrow(dge))
+df.norm$Var2 = factor(df.raw$Var2, levels = colnames(dge$counts))
+df.norm$Type = "Normalized counts"
+
+# Combine and set order
+plot.dt = rbind(df.raw, df.norm)
+
+plot.dt$Type = factor(plot.dt$Type,
+                      levels = c("Raw counts", "Normalized counts"))
+
+# Plot 
+ggplot(plot.dt, aes(x = Var2, y = value, fill = Group)) +
+  geom_boxplot() +
+  coord_flip() +
+  facet_wrap(~Type, ncol = 2) +
+  ggtitle("Boxplot of Raw and Normalized Counts") +
+  xlab("Sample") +
+  ylab("log2(count + 1)") +
+  plot_theme +
+  theme(strip.text = element_text(size = 14))+
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_manual(values = sample.annot.color)
+
+```
+
+### Density plot of raw and normalized counts
+
+``` {r QC_Density, fig.width=10, fig.height=6}
+
+#add a small value to have a good separation between peak of genes with 0 counts and those intermediate or high expression
+epsilon = 0.00001 
+
+# Unfiltered raw counts
+pseudo.unfilt = log2(raw_counts.df + epsilon)
+df.unfilt = reshape2::melt(as.matrix(pseudo.unfilt))
+df.unfilt$Group = design.df$Group[match(df.unfilt$Var2,
+                                         design.df$sampleID)]
+df.unfilt$Sample = df.unfilt$Var2
+df.unfilt$Type = "Raw counts\n(before filtering)"
+
+# Raw counts
+pseudo.raw = log2(dge$counts + epsilon)
+df.raw = reshape2::melt(pseudo.raw)
+df.raw$Group = rep(group, each = nrow(dge))
+df.raw$Sample = df.raw$Var2
+df.raw$Type = "Raw counts"
+
+# Normalized counts
+pseudo.norm = log2(cpm(dge) + epsilon)
+df.norm = reshape2::melt(pseudo.norm)
+df.norm$Group = rep(group, each = nrow(dge))
+df.norm$Sample = df.norm$Var2
+df.norm$Type = "Normalized \ncounts"
+
+# Combine and enforce order
+plot.dt = rbind(df.unfilt, df.raw, df.norm)
+
+plot.dt$Type = factor(plot.dt$Type,
+                      levels = c("Raw counts\n(before filtering)",
+                                 "Raw counts",
+                                 "Normalized \ncounts"))
+
+# Plot
+ggplot(plot.dt, aes(x = value, group = Sample, color = Group)) +
+  geom_density() +
+  facet_wrap(~Type, ncol = 3) +
+  ggtitle("Density plots of gene counts") +
+  xlab("log2(count)") +
+  plot_theme +
+  scale_y_continuous(expand = c(0, NA)) +
+  scale_color_manual(values = sample.annot.color) +
+  theme(strip.text = element_text(size = 14))
+
+```
+
+### Sample distances {.tabset .tabset-fade .tabset-pills}
+
+#### Without batch effect correction
+
+``` {r sample_distances, fig.width=30, fig.height=30}
+
+# Compute distance between sample and cluster sample in a heatmap
+sample.dist = dist(t(logCPM),
+                    method = "euclidean")
+sample.dist.mat = as.matrix(sample.dist)
+# create df for row and column names of the heatmap
+df = as.data.frame(group)
+rownames(df) = rownames(dge$samples)
+colnames(df) = "Group"
+
+#plot sample distances
+pheatmap(sample.dist.mat,
+         clustering_distance_rows = sample.dist,
+         clustering_distance_cols = sample.dist,
+         color=colorRampPalette(rev(brewer.pal(9, "Blues")))(255),
+         annotation_col = df,
+         annotation_colors = list(Group=sample.annot.color),
+         fontsize = 14,
+         main = "Sample distances without batch effect correction")
+
+```
+
+#### With batch effect correction
+
+``` {r sample_distances_batch, fig.width=30, fig.height=30}
+
+design = model.matrix(~ group)
+
+logCPM.corrected = removeBatchEffect(logCPM,
+    batch = batch,
+    batch2 = replicate,
+    design = design)
+
+# Compute distance between sample and cluster sample in a heatmap
+sample.dist = dist(t(logCPM.corrected),
+                    method = "euclidean")
+sample.dist.mat = as.matrix(sample.dist)
+# create df for row and column names of the heatmap
+df = as.data.frame(group)
+rownames(df) = rownames(dge$samples)
+colnames(df) = "Group"
+
+#plot sample distances
+pheatmap(sample.dist.mat,
+         clustering_distance_rows = sample.dist,
+         clustering_distance_cols = sample.dist,
+         color=colorRampPalette(rev(brewer.pal(9, "Blues")))(255),
+         annotation_col = df,
+         annotation_colors = list(Group=sample.annot.color),
+         fontsize = 14,
+         main = "Sample distances with batch effect correction")
+
+```
+
+### Multi-dimensional scaling plot {.tabset .tabset-fade .tabset-pills}
+
+#### Without batch effect correction {.tabset .tabset-fade .tabset-pills}
+
+``` {r mds}
+
+mds = plotMDS(logCPM, plot = FALSE)
+df_mds = tibble(Sample = design.df$sampleID,
+                MDS1 = mds$x,
+                MDS2 = mds$y,
+                Replicate = design.df$Replicate,
+                Group = design.df$Group,
+                Batch = design.df$Batch,
+                Batch.Rep = design.df$Batch.Rep)
+
+# Make PCA plot manually
+plot = ggplot(df_mds, 
+              aes(x = MDS1, y = MDS2, color = Group, shape = Batch)) +
+  geom_point(size = 3) +
+  ggtitle("Multi-dimensional scaling plot") +
+  plot_theme +
+  scale_color_manual(values = sample.annot.color) +
+  guides(shape = guide_legend(ncol = 2),
+         color = guide_legend(ncol = 2)) +
+  xlab("Leading logFC dim1") +
+  ylab("Leading logFC dim2")
+
+embed_plot(plot, width = 8, height = 6)
+
+```
+
+#### With batch effect correction {.tabset .tabset-fade .tabset-pills}
+
+``` {r mds_batch_effect}
+
+mds = plotMDS(logCPM.corrected, plot = FALSE)
+df_mds = tibble(Sample = design.df$sampleID,
+                MDS1 = mds$x,
+                MDS2 = mds$y,
+                Replicate = design.df$Replicate,
+                Group = design.df$Group,
+                Batch = design.df$Batch,
+                Batch.Rep = design.df$Batch.Rep)
+
+# Make PCA plot manually
+plot = ggplot(df_mds, 
+              aes(x = MDS1, y = MDS2, color = Group, shape = Batch)) +
+  geom_point(size = 3) +
+  ggtitle("Multi-dimensional scaling plot with batch effect correction") +
+  plot_theme +
+  scale_color_manual(values = sample.annot.color) +
+  guides(shape = guide_legend(ncol = 2),
+         color = guide_legend(ncol = 2)) +
+  xlab("Leading logFC dim1") +
+  ylab("Leading logFC dim2")
+
+embed_plot(plot, width = 8, height = 6)
+
+```
+
+### PCA top 500 variable genes {.tabset .tabset-fade .tabset-pills}
+
+#### Without batch effect correction {.tabset .tabset-fade .tabset-pills}
+
+``` {r PCA}
+
+gene.var <- apply(logCPM, 1, var)
+
+top500 <- names(sort(gene.var, decreasing = TRUE))[1:500]
+
+logCPM.top500 <- logCPM[top500, ]
+
+pca <- prcomp(t(logCPM.top500), scale. = TRUE)
+
+percentVar <- round(100 * (pca$sdev^2 / sum(pca$sdev^2)), 1)
+
+pca.df = data.frame(PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  Group = group,
+  Batch = batch,
+  Replicate = replicate,
+  Batch.Rep = batch.rep)
+
+# Make PCA plot manually
+plot = ggplot(pca.df,
+       aes(PC1, PC2,
+           color = Group,
+           shape = Batch)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = sample.annot.color) +
+  guides(shape = guide_legend(ncol = 2),
+         color = guide_legend(ncol = 2)) + 
+  xlab(paste0("PC1 (", percentVar[1], "%)")) +
+  ylab(paste0("PC2 (", percentVar[2], "%)")) +
+  ggtitle("PCA") +
+  plot_theme
+
+embed_plot(plot, width = 8, height = 6)
+
+```
+
+#### With batch effect correction {.tabset .tabset-fade .tabset-pills}
+
+``` {r PCA_batch_effect}
+
+gene.var <- apply(logCPM.corrected, 1, var)
+top500 <- order(gene.var, decreasing = TRUE)[1:500]
+
+pca <- prcomp(t(logCPM.corrected[top500, ]), scale. = TRUE)
+
+percentVar <- round(100 * (pca$sdev^2 / sum(pca$sdev^2)), 1)
+
+pca.df = data.frame(PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  Group = group,
+  Batch = batch,
+  Replicate = replicate,
+  Batch.Rep = batch.rep)
+
+# Make PCA plot manually
+plot = ggplot(pca.df,
+       aes(PC1, PC2,
+           color = Group,
+           shape = replicate)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = sample.annot.color) +
+  guides(shape = guide_legend(ncol = 2),
+         color = guide_legend(ncol = 2)) + 
+  xlab(paste0("PC1 (", percentVar[1], "%)")) +
+  ylab(paste0("PC2 (", percentVar[2], "%)")) +
+  ggtitle("PCAs with batch effect correction") +
+  plot_theme
+
+embed_plot(plot, width = 8, height = 6)
+
+```
+
+## **Co-expressed genes**
+
+```{r coexpressed_genes, fig.width=15, fig.height=8}
+
+# ============================================================
+# Define groups 
+# ============================================================
+groups = unique(group)
+
+# ============================================================
+# Build gene sets per group (genes with nonzero count in ≥1 sample)
+# ============================================================
+gene_sets = setNames(lapply(groups, function(g) {
+  # Samples belonging to this group
+  samples = design.df$sampleID[design.df$Group == g]
+  # Subset normalized count matrix to these samples
+  counts = dge$counts[, samples, drop = FALSE]
+  # Genes expressed (nonzero count) in at least one sample
+  rownames(counts)[rowSums(counts > 0) >= 1]
+}), groups)
+
+# All genes observed across all groups
+all_genes = unique(unlist(gene_sets))
+
+# Logical presence/absence of each gene in each group
+presence_df = data.frame(gene = all_genes,
+                         lapply(gene_sets, function(gs) all_genes %in% gs),
+                         check.names = FALSE,
+                         stringsAsFactors = FALSE)
+
+# ============================================================
+# 1. Build the combination matrix
+# ============================================================
+m <- make_comb_mat(presence_df[, groups], mode = "distinct")
+m <- m[comb_size(m) > 0]
+
+# Use the matrix's own set order to guarantee alignment downstream
+mat_sets <- set_name(m)
+
+# ============================================================
+# 2. Named color vector, matched to the matrix's set order
+# IMPORTANT: names in sample.annot.color must exactly match mat_sets values
+# ============================================================
+set_col_vec <- sample.annot.color[mat_sets]
+
+# ============================================================
+# 3. Intersection bar colors (top bars)
+# Highlight single-group-only combinations using sample.annot.color
+# ============================================================
+n_groups <- length(mat_sets)
+
+# Build the binary string for each group's "single group only" combination
+single_group_combs <- setNames(
+  sapply(seq_along(mat_sets), function(i) {
+    paste0(ifelse(seq_len(n_groups) == i, "1", "0"), collapse = "")
+  }),
+  mat_sets
+)
+
+# Map: comb string -> color, pulling directly from sample.annot.color
+comb_col_vec <- sapply(comb_name(m), function(x) {
+  matched_group <- names(single_group_combs)[single_group_combs == x]
+  if (length(matched_group) == 1) {
+    sample.annot.color[matched_group]
+  } else {
+    "grey30"
+  }
+})
+
+# ============================================================
+# 4. Build the UpSet plot
+# ============================================================
+ht <- UpSet(
+  m,
+  comb_order = order(-comb_size(m)),
+  set_order = mat_sets,
+  comb_col = comb_col_vec,
+  top_annotation = HeatmapAnnotation(
+    "Intersection size" = anno_barplot(
+      comb_size(m),
+      border = FALSE,
+      gp = gpar(fill = comb_col_vec),
+      height = unit(9, "cm"),
+      axis_param = list(gp = gpar(fontsize = 16), labels_rot = 0)
+    ),
+    annotation_name_gp = gpar(fontsize = 18, fontface = "bold"),
+    annotation_name_side = "left"
+  ),
+  right_annotation = upset_right_annotation(
+    m,
+    gp = gpar(fill = set_col_vec),
+    width = unit(3, "cm")
+  ),
+  row_names_gp = gpar(fontsize = 16)
+)
+
+# ============================================================
+# 5. Draw and add bar count labels
+# ============================================================
+draw(ht)
+od <- column_order(ht)
+cs <- comb_size(m)
+decorate_annotation("Intersection size", {
+  grid.text(
+    comma(cs[od]),
+    x = seq_along(cs),
+    y = unit(cs[od], "native") + unit(2, "pt"),
+    default.units = "native",
+    just = "bottom",
+    rot = 45,
+    gp = gpar(fontsize = 10)
+  )
+})
+
+```
+
+<br>
+

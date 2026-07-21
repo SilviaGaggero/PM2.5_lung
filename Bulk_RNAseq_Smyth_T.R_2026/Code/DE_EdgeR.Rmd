@@ -1,0 +1,747 @@
+---
+title: "Analysis of cleaned RNAseq data"
+author: "Silvia Gaggero"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+subtitle: Differential gene expression analysis with EdgeR and Limma
+editor_options:
+  chunk_output_type: inline
+css: styles.css
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE,
+                      fig.align = "center",
+                      results = "asis", 
+                      dpi = 200)
+
+```
+
+<br>
+
+## **Initialization**
+
+Load R packages, custom functions, and data needed for the analysis.
+
+<br>
+
+```{r load_libraries, message=FALSE}
+
+# Load Libraries
+## load CRAN libraries
+library(ggplot2) # nice plots
+library(dplyr) # data manipulation
+library(circlize) # color functions
+library(RColorBrewer) # nice color scale
+library(openxlsx) #work with xlsx files
+library(htmltools) # html tools for report visualization
+library(reactable) # nice table visualization
+library(ashr)
+library(patchwork) # nice upset plots
+library(ggvenn)
+library(msigdbr)
+library(forcats)
+#library(scales) # nice scale for axis
+
+## load Bioconductor libraries
+library(edgeR) # DE analysis
+library(org.Hs.eg.db) # gene annotation
+library(GO.db)
+library(clusterProfiler)
+
+```
+
+``` {r load_functions}
+
+wd = getwd()
+source(paste0(wd,"/R_custom_functions.R"))
+
+```
+
+``` {r plot theme}
+
+plot_theme = theme_classic()+
+  theme(axis.text.x = element_text(size=11),
+        axis.text.y = element_text(size=11),
+        axis.title = element_text(size = 12,
+                                  face = "bold"),
+        legend.text = element_text(size = 11),
+        legend.title = element_text(size = 12, 
+                                    face = "bold"),
+        plot.title = element_text(size = 16, 
+                                  face = "bold", 
+                                  hjust = 0.5,
+                                  margin = margin(b = 20)),
+        axis.ticks.length=unit(0.08, "cm"),
+        axis.ticks = element_line(linewidth = 0.25,
+                                  color = "black"),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black",
+                                 linewidth = 0.25))
+
+```
+
+``` {r load_data}
+
+# SET FOLDERS
+path="D:/OneDrive/Lab_Lille/Various projects/Muriel Pichavant/PM2.5/Bulk_RNAseq_Smyth_T.R_2026/"
+source_data_folder= "Source data/"
+analyzed_data_folder= "Analyzed data/"
+fig_folder="Figures/"
+
+
+# LOAD DATA
+dge = readRDS(paste0(path, analyzed_data_folder, "dge_edgeR.rds"))
+
+
+#genes of interests
+interest_genes = c("IL20RA","IL20RB","IL22RA1",
+                   "IL20","IL19","IL24", "IL6", "CXCL8", "TNF")
+
+```
+
+## **Differential Expression Analysis:**  {.tabset .tabset-fade .tabset-pills}  
+
+<br>
+
+``` {r DE_analysis, results='asis'}
+
+samples = colnames(dge$counts)
+
+parts = strsplit(samples, "\\.")
+
+batch = sapply(parts, `[`, 1)
+
+replicate = sapply(parts, `[`, 2)
+
+phenotype = sapply(parts, function(x)
+    paste(x[3:(length(x)-1)], collapse = "."))
+
+treatment = sapply(parts, function(x) tail(x, 1))
+
+batch.rep = paste(batch, replicate, sep = ".")
+
+group = paste(phenotype, treatment, sep = ".")
+
+phenotype.ord = c("M0","M2","M0.M1","M2.M1")
+
+group.ord = c("M0.Veh","M0.PM",
+              "M2.Veh","M2.PM",
+              "M0.M1.Veh","M0.M1.PM",
+              "M2.M1.Veh","M2.M1.PM")
+# Create design table for merged data
+design.df = data.frame(sampleID = samples,
+                       Batch = factor(batch, levels = unique(batch)),
+                       Phenotype = factor(phenotype, levels= phenotype.ord),
+                       Treatment = factor(treatment,
+                                          levels = unique(treatment)),
+                       Replicate = factor(replicate,
+                                          levels = unique(replicate)),
+                       Batch.Rep = factor(batch.rep, levels = unique(batch.rep)),
+                       Group = factor(group,
+                                      levels = group.ord))
+
+# define colors of the clusters
+sample.annot.color = c("#DDB667","#FD9F38","#F09A93","#B2172B",
+                       "#A6CEE3","#599DC8","#A8D08D","#3A924A")
+names(sample.annot.color)=group.ord
+
+
+# Running DE Analysis
+design = model.matrix(~0 + Group + Batch.Rep, data = design.df)
+
+v = voom(dge, design = design)
+voom(dge, design = design, plot = TRUE)
+
+
+saveRDS(v,file=paste0(path, analyzed_data_folder, "v_edgeR.rds"))
+
+# export normalized counts   
+norm_counts.df = as.data.frame(v$E)
+
+tagList(tags$h3("Normalized counts"),
+        table_download(norm_counts.df,
+    base_filename = "Normalized_counts"),
+  reactable(norm_counts.df,
+    searchable = TRUE,
+    pagination = TRUE,
+    showPageSizeOptions = TRUE,
+    defaultPageSize = 5,
+    pageSizeOptions = c(5, 10, 50, 100, 500)))
+
+write.xlsx(norm_counts.df, 
+           file = paste0(path,analyzed_data_folder,"Normalized_counts.xlsx"),
+           rowNames = TRUE, 
+           colNames = TRUE)
+
+
+contrast.mat = makeContrasts(M0_PM_vs_M0_Veh = GroupM0.PM - GroupM0.Veh,
+                             M2_PM_vs_M2_Veh = GroupM2.PM - GroupM2.Veh,
+                             M0M1_PM_vs_M0M1_Veh = GroupM0.M1.PM - GroupM0.M1.Veh,
+                             M2M1_PM_vs_M2M1_Veh = GroupM2.M1.PM - GroupM2.M1.Veh,
+                             # Difference in PM response after M1 transition
+                             Delta_M0M1_PM_vs_Veh = (GroupM0.M1.PM - GroupM0.PM) - (GroupM0.M1.Veh - GroupM0.Veh),
+                             Delta_M2M1_PM_vs_Veh = (GroupM2.M1.PM - GroupM2.PM) - (GroupM2.M1.Veh - GroupM2.Veh),
+                             levels = design)
+
+fit  = lmFit(v, design = design, correlation = corfit$consensus.correlation)
+fit2 = contrasts.fit(fit, contrast.mat)
+fit2 = eBayes(fit2)
+plotSA(fit2, main="Final model: Mean-variance trend")
+
+
+
+# set log2Fold change and padj threshold to use for all subsequent analysis
+log2FC.threshold = 1
+padj.threshold = 0.05
+
+#collect results in list
+res.list = list()
+for (i in colnames(contrast.mat)) {
+  title=i
+  
+  # make idx title
+  cat(paste("\n\n###", title,"\n\n", sep = " "))
+  
+  # DE results
+  res = topTable(fit2, coef = title, number = Inf) 
+  colnames(res) = c("log2FoldChange", "AveExpr", "t", "pvalue", "padj", "B")
+  res$gene = rownames(res)
+  res$diff.expr. = "NO"
+  res$diff.expr.[res$log2FoldChange > log2FC.threshold & res$padj < padj.threshold] = "UP"
+  res$diff.expr.[res$log2FoldChange < -log2FC.threshold & res$padj < padj.threshold] = "DOWN"
+  
+  # add GO terms
+  res = get_human_GO_terms(res,"gene")
+  
+  #HTML output for report
+  tab=tagList(tags$h3(paste("DEG", title)),
+              table_download(res,
+                             base_filename = paste0("DEG_", title)),
+              reactable(res,
+                        searchable = TRUE,
+                        pagination = TRUE,
+                        showPageSizeOptions = TRUE,
+                        defaultPageSize = 5,
+                        pageSizeOptions = c(5, 10, 50, 100, 500)))
+  print(tab)
+  
+  cat("\n")
+  res.list[[title]] = res
+  
+}
+
+
+```
+
+## **Export differentially expressed genes**
+
+<br> 
+
+```{r export data as xlsx}
+
+wb = createWorkbook()
+
+for(name in names(res.list)) {
+  # short names for sheets
+  sheet_name = name
+  addWorksheet(wb, sheetName = sheet_name)
+  writeData(wb, sheet = sheet_name, 
+            x = res.list[[name]], 
+            rowNames = TRUE, 
+            colNames = TRUE)
+}
+
+# Save workbook
+saveWorkbook(wb, file = paste0(path,analyzed_data_folder,"DEG.xlsx"), overwrite = TRUE)
+
+```
+
+<br>
+
+## **p-value plot:**  {.tabset .tabset-fade .tabset-pills}
+
+Visualization of the p value distribution has to be anti-conservative in order to consider reliable the results of multiple comparisons test (see http://varianceexplained.org/statistics/interpreting-pvalue-histogram/).
+
+``` {r pvalue_plot}
+
+for (i in colnames(contrast.mat)) {
+  # make idx title
+  title = i
+  cat(paste0("\n\n### ", title,"\n", sep = " "))
+  
+  # pvalue histogram
+  plot = pval_hist(res.list[[i]], main = title)
+  embed_plot(plot, width = 4, height = 2.5)
+}
+
+```
+
+<br>
+
+## **Volcano plot:** {.tabset .tabset-fade .tabset-pills}
+
+<br>
+
+``` {r volcano for figures}
+
+# Volcano plot
+
+for (i in colnames(contrast.mat)) {
+  # make idx title
+  title = i
+  cat(paste0("\n\n### ", title,"\n\n", sep = " "))
+  
+  # Volcano plot
+  plot = volcano.plot(res.list[[i]], 
+                      lfc = log2FC.threshold, 
+                      padj = padj.threshold,
+                      main=title,
+                      imp.genes = interest_genes,
+                      top_n = 10) +
+    plot_theme+
+    scale_y_continuous(limits = c(0, 50))+
+    scale_x_continuous(limits = c(-8, 8))
+  
+  embed_plot(plot, width = 6, height = 6)
+  
+  
+ggsave(filename = paste0("Volcano", i,".tiff"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 10,
+         width = 10,
+         units = "cm",
+         dpi = 300)
+  
+}
+
+```
+
+<br>
+
+## **Venn diagram** {.tabset .tabset-fade .tabset-pills}
+
+<br>
+
+``` {r venn}
+
+sel.res.list = res.list[c("M0_PM_vs_M0_Veh",
+                         "M2_PM_vs_M2_Veh",
+                         "M0M1_PM_vs_M0M1_Veh")]
+
+
+up_genes = lapply(sel.res.list, function(x) {
+    x$gene[x$diff.exp == "UP"]
+})
+
+down_genes = lapply(sel.res.list, function(x) {
+    x$gene[x$diff.exp == "DOWN"]
+})
+
+
+cat("\n\n### Venn diagram of upregulated genes\n\n")
+
+plot = ggvenn(up_genes,
+  fill_color = c("#DDB667", "#F09A93", "#A6CEE3"),
+  stroke_size = 0.5,
+  set_name_size = 3,
+  text_size = 3,
+  show_percentage = FALSE) +
+  theme(plot.background = element_rect(fill = "white", colour = NA),
+    panel.background = element_rect(fill = "white", colour = NA))
+
+embed_plot(plot, width = 6, height = 6)
+
+ggsave(filename = paste0("Venn of shared upregulated genes.svg"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 8,
+         width = 8,
+         units = "cm",
+         dpi = 300)
+
+shared_up = Reduce(intersect, up_genes)
+
+cat(length(shared_up), "upregulated genes:",
+  paste(shared_up, collapse = ", "))
+       
+cat("\n\n### Venn diagram of downregulated genes\n\n")
+
+plot = ggvenn(down_genes,
+  fill_color = c("#DDB667", "#F09A93", "#A6CEE3"),
+  stroke_size = 0.5,
+  set_name_size = 3,
+  text_size = 3,
+  show_percentage = FALSE) +
+  theme(plot.background = element_rect(fill = "white", colour = NA),
+    panel.background = element_rect(fill = "white", colour = NA))
+
+embed_plot(plot, width = 6, height = 6)
+
+ggsave(filename = paste0("Venn of shared downregulated genes.svg"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 8,
+         width = 8,
+         units = "cm",
+         dpi = 300)
+
+
+shared_down = Reduce(intersect, down_genes)
+cat(length(shared_down), "downregulated genes:",
+  paste(shared_up, collapse = ", "))
+
+```
+
+## **Pathway analysis**
+
+<br> 
+
+### Over-representation analysis (ORA) on shared up or downregulated genes
+
+``` {r prep_ORA}
+
+
+# Set universe for ORA
+universe = mapIds(org.Hs.eg.db, 
+                      keys=rownames(dge$counts), 
+                      column="ENTREZID", 
+                      keytype="SYMBOL", 
+                      multiVals="first")
+#load pathway DB
+hallmark.db = msigdbr(species = "Homo sapiens", category = "H") %>%
+    dplyr::select(gs_name, entrez_gene,gene_symbol)
+
+GO.BP.db = msigdbr(species = "Homo sapiens", category = "C5",subcategory = "BP") %>%
+    dplyr::select(gs_name, entrez_gene,gene_symbol)
+
+reactome.db = msigdbr(species = "Homo sapiens", category = "C2",subcategory = "REACTOME") %>%
+    dplyr::select(gs_name, entrez_gene,gene_symbol)
+
+
+
+
+# Map entrez.id to up gene names
+UP_genes_ID = mapIds(org.Hs.eg.db, 
+                       keys=shared_up, 
+                       column="ENTREZID", 
+                       keytype="SYMBOL", 
+                       multiVals="first")
+
+# Map entrez.id to down gene names
+DOWN_genes_ID = mapIds(org.Hs.eg.db, 
+                       keys=shared_down, 
+                       column="ENTREZID", 
+                       keytype="SYMBOL", 
+                       multiVals="first")
+
+DEG.list=list(Upregulated = UP_genes_ID,
+              Downregulated = DOWN_genes_ID)
+
+```
+
+#### Reactome
+
+``` {r GO_reactome}
+
+reactome_enrich.list=list()
+for(name in names(DEG.list)){
+  
+  cat(paste("\n\n##### ORA on", name, "genes\n\n"))
+  
+  genes = DEG.list[[name]]
+  
+  # Perform enrichment
+  enrich = enricher(gene = genes,
+                             universe = universe,
+                             TERM2GENE = reactome.db,
+                             pvalueCutoff = 0.05,
+                             pAdjustMethod = "BH")
+  enrich.df = as.data.frame(enrich)
+  ## Store enrichment result
+  reactome_enrich.list[[name]] = enrich.df
+  
+  # Plot top 10 terms
+  if (nrow(as.data.frame(enrich.df)) == 0) {
+    cat("No enriched terms for", name, "genes\n")
+    next
+  }
+  
+  enrich.df = enrich.df %>%
+    arrange(p.adjust) %>%
+    slice_head(n = 10) %>%
+    mutate(Description = gsub("REACTOME_", "", Description),
+           Description = gsub("_", " ", Description)) %>%
+    mutate(Description = fct_reorder(Description, Count))
+  
+  
+  plot = ggplot(enrich.df, aes(Count, Description, fill = p.adjust)) +
+    geom_col() +
+    scale_fill_gradient(low = "#EB2A2E",
+                        high = "#FFEDA0") +
+    scale_x_continuous(expand = c(0, 0)) +
+    labs(title = name,
+         x = "Gene count",
+         y = NULL,
+         fill = "Adjusted\nP-value") +
+    plot_theme
+  
+  embed_plot(plot,width = 10,height = 6)
+  
+  ggsave(filename = paste0("Reactome on shared ",name," genes.svg"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 8,
+         width = 15,
+         units = "cm",
+         dpi = 300)
+}
+
+```
+
+#### GO-BP
+
+``` {r GO_BP}
+
+GOBP_enrich.list=list()
+for(name in names(DEG.list)){
+  
+  cat(paste("\n\n##### ORA on", name, "genes\n\n"))
+  
+  genes = DEG.list[[name]]
+  
+  # Perform enrichment
+  enrich = enricher(gene = genes,
+                             universe = universe,
+                             TERM2GENE = GO.BP.db,
+                             pvalueCutoff = 0.05,
+                             pAdjustMethod = "BH")
+  enrich.df = as.data.frame(enrich)
+  ## Store enrichment result
+  GOBP_enrich.list[[name]] = enrich.df
+  
+  # Plot top 10 terms
+  if (nrow(as.data.frame(enrich.df)) == 0) {
+    cat("No enriched terms for", name, "genes\n")
+    next
+  }
+  
+  enrich.df = enrich.df %>%
+    arrange(p.adjust) %>%
+    slice_head(n = 10) %>%
+    mutate(Description = gsub("GOBP_", "", Description),
+           Description = gsub("_", " ", Description)) %>%
+    mutate(Description = fct_reorder(Description, Count))
+  
+  
+  plot = ggplot(enrich.df, aes(Count, Description, fill = p.adjust)) +
+    geom_col() +
+    scale_fill_gradient(low = "#EB2A2E",
+                        high = "#FFEDA0") +
+    scale_x_continuous(expand = c(0, 0)) +
+    labs(title = name,
+         x = "Gene count",
+         y = NULL,
+         fill = "Adjusted\nP-value") +
+    plot_theme
+  
+  embed_plot(plot,width = 10,height = 6)
+  
+  ggsave(filename = paste0("GOBP on shared ",name," genes.svg"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 8,
+         width = 15,
+         units = "cm",
+         dpi = 300)
+}
+
+```
+
+#### Hallmark
+
+``` {r GO_hallmark}
+
+hallmark_enrich.list=list()
+for(name in names(DEG.list)){
+  
+  cat(paste("\n\n##### ORA on", name, "genes\n\n"))
+  
+  genes = DEG.list[[name]]
+  
+  # Perform enrichment
+  enrich = enricher(gene = genes,
+                             universe = universe,
+                             TERM2GENE = hallmark.db,
+                             pvalueCutoff = 0.05,
+                             pAdjustMethod = "BH")
+  enrich.df = as.data.frame(enrich)
+  ## Store enrichment result
+  hallmark_enrich.list[[name]] = enrich.df
+  
+  # Plot top 10 terms
+  if (nrow(as.data.frame(enrich.df)) == 0) {
+    cat("No enriched terms for", name, "genes\n")
+    next
+  }
+  
+  enrich.df = enrich.df %>%
+    arrange(p.adjust) %>%
+    slice_head(n = 10) %>%
+    mutate(Description = gsub("HALLMARK_", "", Description),
+           Description = gsub("_", " ", Description)) %>%
+    mutate(Description = fct_reorder(Description, Count))
+  
+  
+  plot = ggplot(enrich.df, aes(Count, Description, fill = p.adjust)) +
+    geom_col() +
+    scale_fill_gradient(low = "#EB2A2E",
+                        high = "#FFEDA0") +
+    scale_x_continuous(expand = c(0, 0)) +
+    labs(title = name,
+         x = "Gene count",
+         y = NULL,
+         fill = "Adjusted\nP-value") +
+    plot_theme
+  
+  embed_plot(plot,width = 10,height = 6)
+  
+  ggsave(filename = paste0("Hallmark on shared ",name," genes.svg"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 8,
+         width = 15,
+         units = "cm",
+         dpi = 300)
+}
+
+```
+
+## **Normalized counts of selected genes**
+
+```{r counts}
+
+# Normalized counts (CPM)
+norm.counts = cpm(dge, normalized.lib.sizes = TRUE)
+
+for (gene in interest_genes) {
+  
+  # skip genes not present
+  if (!gene %in% rownames(norm.counts)) next
+  
+  # Extract gene expression values
+  gene.values <- norm.counts[gene, ]
+  
+  # Build dataframe
+  df <- data.frame(
+    sample = names(gene.values),
+    count = as.numeric(gene.values),
+    group = group
+  )
+  
+  group.ord <- c("M0.Veh", "M0.PM",
+  "M2.Veh", "M2.PM",
+  "M0.M1.Veh", "M0.M1.PM")
+# Filter and order groups
+df <- df %>%
+  filter(group %in% group.ord) %>%
+  mutate(group = factor(group, levels = group.ord))
+  
+  # Mean per group
+  df.summary <- df %>%
+  group_by(group) %>%
+  summarise(
+    mean_count = mean(count),
+    sd_count = sd(count),
+    .groups = "drop"
+  ) %>%
+  mutate(group = factor(group, levels = group.ord))
+  
+  # Plot
+  plot <- ggplot(df.summary, aes(x = group, y = mean_count)) +
+  
+  # bars: fill by group, black border
+  geom_bar(
+    aes(fill = group),
+    stat = "identity",
+    width = 0.7,
+    color = "black",
+    linewidth = 0.8
+  ) +
+  
+  # standard deviation error bars: black
+  geom_errorbar(
+    aes(
+      ymin = mean_count - sd_count,
+      ymax = mean_count + sd_count
+    ),
+    width = 0.2,
+    color = "black",
+    linewidth = 0.7
+  ) +
+  
+  # individual sample points: white fill, black stroke
+  geom_point(
+    data = df,
+    aes(x = group, y = count),
+    position = position_jitter(width = 0.08, height = 0),
+    size = 1.8,
+    shape = 21,
+    fill = "white",
+    color = "black",
+    stroke = 0.8
+  ) +
+  
+  scale_fill_manual(values = sample.annot.color) +
+    scale_y_continuous(expand = c(0,0))+
+  
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = margin(5.5, 15, 5.5, 5.5)
+  ) +
+  
+  coord_cartesian(clip = "off") +
+  
+  labs(
+    title = gene,
+    x = "Group",
+    y = "Normalized count (CPM)"
+  )
+  
+  embed_plot(plot,width = 8,height = 5,dpi = 200)
+  
+  ggsave(filename = paste0("Normalized counts of ",gene,".svg"),
+         plot = plot,
+         path = paste0(path,fig_folder),
+         height = 6,
+         width = 10,
+         units = "cm",
+         dpi = 300)
+}
+
+
+```
+
+<br><br>
+
+## **Session Info**
+
+<br>
+
+``` {r session_info}
+sessionInfo()
+```
