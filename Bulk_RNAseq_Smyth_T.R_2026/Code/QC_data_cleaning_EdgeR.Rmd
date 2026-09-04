@@ -87,7 +87,7 @@ analyzed_data_folder= "Analyzed data/"
 fig_folder="Figures/"
 
 #MART HUMAN GENE NAMES
-mart_path = paste0(path,source_data_folder,"mart_export_human_v2025Dec.txt")
+mart_path = paste0(path,source_data_folder,"mart_export_human_ensembl116.tsv")
 
 # LOAD RAW COUNTS:
 raw_counts.df = read.xlsx(paste0(path,source_data_folder,"Raw_RNAseq_Count_Data.xlsx"),

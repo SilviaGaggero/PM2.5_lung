@@ -507,3 +507,56 @@ MA_plot = function(df, lfc = 1, padj = 0.05, imp.genes = NULL,
   return(p)
 }
 
+# ============================================================
+# Significance brackets
+# ============================================================
+
+add_sig_brackets = function(sig_df, group_levels, y_base, step = NULL,
+                             bracket_width = 0.08, text_size = 2.5,
+                             sig_threshold = 0.05) {
+  
+  if (is.null(sig_df) || nrow(sig_df) == 0) return(list())
+  
+  sig_df = sig_df[sig_df$pvalue < sig_threshold, , drop = FALSE]
+  if (nrow(sig_df) == 0) return(list())
+  
+  # Sort by span so wider brackets stack on top
+  sig_df$idx1 = match(sig_df$group1, group_levels)
+  sig_df$idx2 = match(sig_df$group2, group_levels)
+  sig_df$span = abs(sig_df$idx2 - sig_df$idx1)
+  sig_df = sig_df[order(sig_df$span), ]
+  
+  if (is.null(step)) step = max(y_base * 0.08, 0.5)
+  
+  layers = list()
+  for (i in seq_len(nrow(sig_df))) {
+    row = sig_df[i, ]
+    y_pos = y_base + i * step
+    
+    # Format p-value text
+    if (row$pvalue < 0.001) {
+      pval_text = "p < 0.001"
+    } else {
+      pval_text = sprintf("p = %.3f", row$pvalue)
+    }
+    
+    layers = c(layers, list(
+      # Left tick
+      annotate("segment", x = row$idx1 - bracket_width,
+               xend = row$idx1 - bracket_width,
+               y = y_pos - step * 0.3, yend = y_pos, linewidth = 0.4),
+      # Right tick
+      annotate("segment", x = row$idx2 + bracket_width,
+               xend = row$idx2 + bracket_width,
+               y = y_pos - step * 0.3, yend = y_pos, linewidth = 0.4),
+      # Horizontal line
+      annotate("segment", x = row$idx1 - bracket_width,
+               xend = row$idx2 + bracket_width,
+               y = y_pos, yend = y_pos, linewidth = 0.4),
+      # P-value text
+      annotate("text", x = (row$idx1 + row$idx2) / 2,
+               y = y_pos + step * 0.15, label = pval_text,
+               size = text_size, vjust = 0, hjust = 0.5)))
+  }
+  return(layers)
+}

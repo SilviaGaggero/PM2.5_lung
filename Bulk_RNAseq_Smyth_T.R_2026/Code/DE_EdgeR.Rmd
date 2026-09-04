@@ -195,7 +195,7 @@ contrast.mat = makeContrasts(M0_PM_vs_M0_Veh = GroupM0.PM - GroupM0.Veh,
                              Delta_M2M1_PM_vs_Veh = (GroupM2.M1.PM - GroupM2.PM) - (GroupM2.M1.Veh - GroupM2.Veh),
                              levels = design)
 
-fit  = lmFit(v, design = design, correlation = corfit$consensus.correlation)
+fit  = lmFit(v, design = design)
 fit2 = contrasts.fit(fit, contrast.mat)
 fit2 = eBayes(fit2)
 plotSA(fit2, main="Final model: Mean-variance trend")
@@ -405,11 +405,11 @@ cat(length(shared_down), "downregulated genes:",
 
 ```
 
-## **Pathway analysis**
+## **Pathway analysis** {.tabset .tabset-fade .tabset-pills}
 
 <br> 
 
-### Over-representation analysis (ORA) on shared up or downregulated genes
+### Over-representation analysis (ORA) on shared up or downregulated genes {.tabset .tabset-fade .tabset-pills}
 
 ``` {r prep_ORA}
 
@@ -423,15 +423,6 @@ universe = mapIds(org.Hs.eg.db,
 #load pathway DB
 hallmark.db = msigdbr(species = "Homo sapiens", category = "H") %>%
     dplyr::select(gs_name, entrez_gene,gene_symbol)
-
-GO.BP.db = msigdbr(species = "Homo sapiens", category = "C5",subcategory = "BP") %>%
-    dplyr::select(gs_name, entrez_gene,gene_symbol)
-
-reactome.db = msigdbr(species = "Homo sapiens", category = "C2",subcategory = "REACTOME") %>%
-    dplyr::select(gs_name, entrez_gene,gene_symbol)
-
-
-
 
 # Map entrez.id to up gene names
 UP_genes_ID = mapIds(org.Hs.eg.db, 
@@ -452,125 +443,7 @@ DEG.list=list(Upregulated = UP_genes_ID,
 
 ```
 
-#### Reactome
-
-``` {r GO_reactome}
-
-reactome_enrich.list=list()
-for(name in names(DEG.list)){
-  
-  cat(paste("\n\n##### ORA on", name, "genes\n\n"))
-  
-  genes = DEG.list[[name]]
-  
-  # Perform enrichment
-  enrich = enricher(gene = genes,
-                             universe = universe,
-                             TERM2GENE = reactome.db,
-                             pvalueCutoff = 0.05,
-                             pAdjustMethod = "BH")
-  enrich.df = as.data.frame(enrich)
-  ## Store enrichment result
-  reactome_enrich.list[[name]] = enrich.df
-  
-  # Plot top 10 terms
-  if (nrow(as.data.frame(enrich.df)) == 0) {
-    cat("No enriched terms for", name, "genes\n")
-    next
-  }
-  
-  enrich.df = enrich.df %>%
-    arrange(p.adjust) %>%
-    slice_head(n = 10) %>%
-    mutate(Description = gsub("REACTOME_", "", Description),
-           Description = gsub("_", " ", Description)) %>%
-    mutate(Description = fct_reorder(Description, Count))
-  
-  
-  plot = ggplot(enrich.df, aes(Count, Description, fill = p.adjust)) +
-    geom_col() +
-    scale_fill_gradient(low = "#EB2A2E",
-                        high = "#FFEDA0") +
-    scale_x_continuous(expand = c(0, 0)) +
-    labs(title = name,
-         x = "Gene count",
-         y = NULL,
-         fill = "Adjusted\nP-value") +
-    plot_theme
-  
-  embed_plot(plot,width = 10,height = 6)
-  
-  ggsave(filename = paste0("Reactome on shared ",name," genes.svg"),
-         plot = plot,
-         path = paste0(path,fig_folder),
-         height = 8,
-         width = 15,
-         units = "cm",
-         dpi = 300)
-}
-
-```
-
-#### GO-BP
-
-``` {r GO_BP}
-
-GOBP_enrich.list=list()
-for(name in names(DEG.list)){
-  
-  cat(paste("\n\n##### ORA on", name, "genes\n\n"))
-  
-  genes = DEG.list[[name]]
-  
-  # Perform enrichment
-  enrich = enricher(gene = genes,
-                             universe = universe,
-                             TERM2GENE = GO.BP.db,
-                             pvalueCutoff = 0.05,
-                             pAdjustMethod = "BH")
-  enrich.df = as.data.frame(enrich)
-  ## Store enrichment result
-  GOBP_enrich.list[[name]] = enrich.df
-  
-  # Plot top 10 terms
-  if (nrow(as.data.frame(enrich.df)) == 0) {
-    cat("No enriched terms for", name, "genes\n")
-    next
-  }
-  
-  enrich.df = enrich.df %>%
-    arrange(p.adjust) %>%
-    slice_head(n = 10) %>%
-    mutate(Description = gsub("GOBP_", "", Description),
-           Description = gsub("_", " ", Description)) %>%
-    mutate(Description = fct_reorder(Description, Count))
-  
-  
-  plot = ggplot(enrich.df, aes(Count, Description, fill = p.adjust)) +
-    geom_col() +
-    scale_fill_gradient(low = "#EB2A2E",
-                        high = "#FFEDA0") +
-    scale_x_continuous(expand = c(0, 0)) +
-    labs(title = name,
-         x = "Gene count",
-         y = NULL,
-         fill = "Adjusted\nP-value") +
-    plot_theme
-  
-  embed_plot(plot,width = 10,height = 6)
-  
-  ggsave(filename = paste0("GOBP on shared ",name," genes.svg"),
-         plot = plot,
-         path = paste0(path,fig_folder),
-         height = 8,
-         width = 15,
-         units = "cm",
-         dpi = 300)
-}
-
-```
-
-#### Hallmark
+#### Hallmark {.tabset .tabset-fade .tabset-pills}
 
 ``` {r GO_hallmark}
 
@@ -627,108 +500,210 @@ for(name in names(DEG.list)){
          dpi = 300)
 }
 
+## Export all ORA results to Excel
+wb = createWorkbook()
+
+for (sheet in names(hallmark_enrich.list)) {
+  # Excel sheet names cannot exceed 31 characters
+  sheet_name = substr(sheet, 1, 31)
+
+  addWorksheet(wb, sheet_name)
+  writeData(wb, sheet_name, hallmark_enrich.list[[sheet]])
+}
+
+saveWorkbook(
+  wb,
+  file = file.path(path, analyzed_data_folder, "Hallmark_ORA_results.xlsx"),
+  overwrite = TRUE
+)
+
 ```
 
 ## **Normalized counts of selected genes**
 
 ```{r counts}
 
+# ---- All pairwise contrasts among the 6 plotted groups ----
+# These reuse the existing limma-voom fit (batch-corrected, voom-weighted)
+# to compute p-values for every group pair shown in the count plots.
+
+plotted_groups <- c("M0.Veh", "M0.PM", "M2.Veh", "M2.PM",
+                    "M0.M1.Veh", "M0.M1.PM")
+
+# Generate all C(6,2) = 15 pairwise combinations
+pairs_list <- combn(plotted_groups, 2, simplify = FALSE)
+pairwise_names <- sapply(pairs_list, function(p) paste0(p[1], "_vs_", p[2]))
+pairwise_formulas <- sapply(pairs_list, function(p) {
+  paste0("Group", p[1], " - Group", p[2])
+})
+
+# Build contrast matrix
+contrast_call <- paste(pairwise_names, "=", pairwise_formulas, collapse = ", ")
+pairwise.contrast.mat <- eval(parse(text = sprintf("makeContrasts(%s, levels = design)", contrast_call)))
+
+# Fit pairwise contrasts on the original limma fit object
+fit_pairwise <- contrasts.fit(fit, pairwise.contrast.mat)
+fit_pairwise <- eBayes(fit_pairwise)
+
+# Extract raw p-values for genes of interest
+pairwise_pvals <- data.frame(gene = interest_genes, stringsAsFactors = FALSE)
+for (i in seq_along(pairwise_names)) {
+  cn <- pairwise_names[i]
+  tt <- topTable(fit_pairwise, coef = cn, number = Inf, sort.by = "none")
+  tt$gene <- rownames(tt)
+  pairwise_pvals[[cn]] <- sapply(interest_genes, function(g) {
+    if (g %in% tt$gene) tt$P.Value[tt$gene == g] else NA
+  })
+}
+
+# BH correction across the 15 comparisons within each gene
+pairwise_padj <- pairwise_pvals
+pval_cols <- colnames(pairwise_pvals)[-1]
+for (j in 1:nrow(pairwise_padj)) {
+  pvals_row <- as.numeric(pairwise_padj[j, pval_cols])
+  valid <- !is.na(pvals_row)
+  if (sum(valid) > 0) {
+    adjusted <- rep(NA, length(pvals_row))
+    adjusted[valid] <- p.adjust(pvals_row[valid], method = "BH")
+    pairwise_padj[j, pval_cols] <- adjusted
+  }
+}
+
+
+
 # Normalized counts (CPM)
 norm.counts = cpm(dge, normalized.lib.sizes = TRUE)
 
+# Group order for the plot (6 groups, excluding M2.M1)
+group.ord <- c("M0.Veh", "M0.PM",
+               "M2.Veh", "M2.PM",
+               "M0.M1.Veh", "M0.M1.PM")
+
 for (gene in interest_genes) {
-  
+
   # skip genes not present
   if (!gene %in% rownames(norm.counts)) next
-  
+
   # Extract gene expression values
   gene.values <- norm.counts[gene, ]
-  
+
   # Build dataframe
   df <- data.frame(
     sample = names(gene.values),
     count = as.numeric(gene.values),
     group = group
   )
-  
-  group.ord <- c("M0.Veh", "M0.PM",
-  "M2.Veh", "M2.PM",
-  "M0.M1.Veh", "M0.M1.PM")
-# Filter and order groups
-df <- df %>%
-  filter(group %in% group.ord) %>%
-  mutate(group = factor(group, levels = group.ord))
-  
+
+  # Filter and order groups
+  df <- df %>%
+    filter(group %in% group.ord) %>%
+    mutate(group = factor(group, levels = group.ord))
+
   # Mean per group
   df.summary <- df %>%
-  group_by(group) %>%
-  summarise(
-    mean_count = mean(count),
-    sd_count = sd(count),
-    .groups = "drop"
-  ) %>%
-  mutate(group = factor(group, levels = group.ord))
-  
+    group_by(group) %>%
+    summarise(
+      mean_count = mean(count),
+      sd_count = sd(count),
+      .groups = "drop"
+    ) %>%
+    mutate(group = factor(group, levels = group.ord))
+
+  # ---- Build significance comparison data frame for this gene ----
+  gene_padj_row <- pairwise_padj[pairwise_padj$gene == gene, , drop = FALSE]
+  sig_df <- data.frame()
+  for (cn in pairwise_names) {
+    parts <- strsplit(cn, "_vs_")[[1]]
+    padj_val <- as.numeric(gene_padj_row[[cn]])
+    if (!is.na(padj_val)) {
+      sig_df <- rbind(sig_df, data.frame(
+        group1 = parts[1], group2 = parts[2], pvalue = padj_val,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+
+  n_sig <- sum(sig_df$pvalue < 0.05)
+  y_max <- max(df.summary$mean_count + df.summary$sd_count, na.rm = TRUE)
+
+  # Dynamic bracket spacing proportional to data range
+  step <- max(y_max * 0.06, 0.05)
+  y_base <- y_max + step * 1.5
+  y_upper <- y_base + (n_sig + 1) * step
+
+  # Dynamic plot height: taller for genes with more significant comparisons
+  plot_height <- min(6 + n_sig * 0.5, 16)  # cm, capped at 16
+
   # Plot
   plot <- ggplot(df.summary, aes(x = group, y = mean_count)) +
-  
-  # bars: fill by group, black border
-  geom_bar(
-    aes(fill = group),
-    stat = "identity",
-    width = 0.7,
-    color = "black",
-    linewidth = 0.8
-  ) +
-  
-  # standard deviation error bars: black
-  geom_errorbar(
-    aes(
-      ymin = mean_count - sd_count,
-      ymax = mean_count + sd_count
-    ),
-    width = 0.2,
-    color = "black",
-    linewidth = 0.7
-  ) +
-  
-  # individual sample points: white fill, black stroke
-  geom_point(
-    data = df,
-    aes(x = group, y = count),
-    position = position_jitter(width = 0.08, height = 0),
-    size = 1.8,
-    shape = 21,
-    fill = "white",
-    color = "black",
-    stroke = 0.8
-  ) +
-  
-  scale_fill_manual(values = sample.annot.color) +
-    scale_y_continuous(expand = c(0,0))+
-  
-  theme_classic() +
-  theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    plot.margin = margin(5.5, 15, 5.5, 5.5)
-  ) +
-  
-  coord_cartesian(clip = "off") +
-  
-  labs(
-    title = gene,
-    x = "Group",
-    y = "Normalized count (CPM)"
-  )
-  
-  embed_plot(plot,width = 8,height = 5,dpi = 200)
-  
-  ggsave(filename = paste0("Normalized counts of ",gene,".svg"),
+
+    # bars: fill by group, black border
+    geom_bar(
+      aes(fill = group),
+      stat = "identity",
+      width = 0.7,
+      color = "black",
+      linewidth = 0.8
+    ) +
+
+    # standard deviation error bars: black
+    geom_errorbar(
+      aes(
+        ymin = mean_count - sd_count,
+        ymax = mean_count + sd_count
+      ),
+      width = 0.2,
+      color = "black",
+      linewidth = 0.7
+    ) +
+
+    # individual sample points: white fill, black stroke
+    geom_point(
+      data = df,
+      aes(x = group, y = count),
+      position = position_jitter(width = 0.08, height = 0),
+      size = 1.8,
+      shape = 21,
+      fill = "white",
+      color = "black",
+      stroke = 0.8
+    ) +
+
+    scale_fill_manual(values = sample.annot.color) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, y_upper)) +
+
+    theme_classic() +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.margin = margin(5.5, 15, 5.5, 5.5)
+    ) +
+
+    coord_cartesian(clip = "off") +
+
+    labs(
+      title = gene,
+      x = "Group",
+      y = "Normalized count (CPM)"
+    )
+
+  # Add significance brackets for significant comparisons (padj < 0.05)
+  if (n_sig > 0) {
+    plot <- plot + add_sig_brackets(
+      sig_df, group_levels = group.ord,
+      y_base = y_base, step = step,
+      bracket_width = 0.08, text_size = 2.5,
+      sig_threshold = 0.05
+    )
+  }
+
+  embed_plot(plot, width = 8, height = plot_height * 0.5, dpi = 200)
+
+  ggsave(filename = paste0("Normalized counts of ", gene, ".svg"),
          plot = plot,
-         path = paste0(path,fig_folder),
-         height = 6,
-         width = 10,
+         path = paste0(path, fig_folder),
+         height = plot_height,
+         width = 12,
          units = "cm",
          dpi = 300)
 }
